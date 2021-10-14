@@ -25,11 +25,14 @@ class LocalCostmapGenerator():
         img_service_name = rospy.get_name() + "/get_image"
         #rospy.Service(img_service_name, StateTSImagesGeneration, self.get_img_callback)
         rospy.Service(img_service_name, StateImageGenerationSrv, self.get_img_callback)
-        
-        self.img_width = 60
-        self.img_height = 60
+
+        ns = rospy.get_namespace()
+        self.img_width = rospy.get_param("%srl_agent/img_width_pos"%ns) + rospy.get_param("%s/rl_agent/img_width_neg"%ns)
+        self.img_height = rospy.get_param("%srl_agent/img_height"%ns)
         self.range_max, self.range_min = 4.0, -4.0
         self.xy_reso = (self.range_max - self.range_min) / self.img_width
+
+        self.og_pub = rospy.Publisher('%srl_map'%ns, OccupancyGrid, queue_size=1)
 
     def get_img_callback(self, req):
         rospy.loginfo(rospy.get_caller_id()+"I receive scan & waypoints") # テスト用
@@ -49,16 +52,19 @@ class LocalCostmapGenerator():
 
         # 時系列マップ生成
         t0_map = self.generate_costmap(req.scan, req.wps)
+        self.og_pub.publish(t0_map) # debug
         imgs.maps.append(t0_map)
         
         # 歩行者まだ
         #imgs.img_t1 = generate_costmap(img_size, req.scan, req.wp, pred_ped_traj[:,0])
         #imgs.img_t2 = generate_costmap(img_size, req.scan, req.wp, pred_ped_traj[:,1])
-        return imgs
+        
+        #return imgs
+        return t0_map
 
     def add_scan_to_image(self, image, scan):
         occupied = 100
-        free = 50
+        free = 30
         
         center_ix, center_iy = int(self.img_width/2), int(self.img_height/2)  # center coordinate of the grid map
 
@@ -116,21 +122,14 @@ class LocalCostmapGenerator():
         # set info
         img = OccupancyGrid()
         img.header.stamp = rospy.Time.now()
-        #img.header.frame_id = "/map"
+        img.header.frame_id = "/map"
         img.info.resolution = self.xy_reso
         img.info.width = self.img_width
         img.info.height = self.img_height
         img.info.origin.position.x = 0.0
-        img.info.origin.position.y = 0.0
-        rad = 0.0
-        #q = Quaternion(axis=[0,0,1], angle=rad).elements
-        #img.info.origin.orientation.x = q[1]
-        #img.info.origin.orientation.y = q[2]
-        #img.info.origin.orientation.z = q[3]
-        #img.info.origin.orientation.w = q[0]
-        
-        # probabilities are in the range [0,100].  Unknown is -1
-        img_data = np.ones(self.img_width * self.img_height) * -1
+        img.info.origin.position.y = -self.img_height * self.xy_reso / 2.0
+
+        img_data = np.ones(self.img_width * self.img_height) * 50
 
         # スキャンデータを占有グリッドマップに変換
         self.add_scan_to_image(img_data, scan)
@@ -167,14 +166,7 @@ def predict_ped_traj(d, delta_t, traj):
     return pred_traj
 
 
-def main():
+if __name__ == '__main__':
     rospy.init_node('costmap_generator')
     lcg = LocalCostmapGenerator()
     rospy.spin()
-    
-    # テスト用
-    #wp = np.array([[0.2,0],[0.4,0],[0.6,0],[0.8,0.2],[1.0,0.4]])  # ゴールまでの経路
-    #ped_traj = np.array([[[0,0],[0.1,0.1]],[[1,1],[0.9,0.9]]])  # 歩行者の現在までの経路
-
-if __name__ == '__main__':
-    main()
