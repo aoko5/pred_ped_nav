@@ -29,13 +29,16 @@ class LocalCostmapGenerator():
         ns = rospy.get_namespace()
         self.img_width = rospy.get_param("%srl_agent/img_width_pos"%ns) + rospy.get_param("%s/rl_agent/img_width_neg"%ns)
         self.img_height = rospy.get_param("%srl_agent/img_height"%ns)
+        self.robot_frame = rospy.get_param("%srl_agent/robot_frame"%ns)
+        self.tf_listener = tf.TransformListener()
+
         self.range_max, self.range_min = 4.0, -4.0
         self.xy_reso = (self.range_max - self.range_min) / self.img_width
 
         self.og_pub = rospy.Publisher('%srl_map'%ns, OccupancyGrid, queue_size=1)
 
     def get_img_callback(self, req):
-        rospy.loginfo(rospy.get_caller_id()+"I receive scan & waypoints") # テスト用
+        #rospy.loginfo(rospy.get_caller_id()+"I receive scan & waypoints") # テスト用
         imgs = TimeSeriesImages()
         imgs.header.stamp = rospy.Time.now()
         
@@ -65,36 +68,48 @@ class LocalCostmapGenerator():
     def add_scan_to_image(self, image, scan):
         occupied = 100
         free = 30
-        
+
         center_ix, center_iy = int(self.img_width/2), int(self.img_height/2)  # center coordinate of the grid map
 
         for i in range(len(scan.ranges)):
-            ang = scan.angle_min + scan.angle_increment
+            ang = scan.angle_min + scan.angle_increment * i
             dist = scan.ranges[i]
-            if np.isnan(dist) or dist == 0.0:
-                continue
-            else:
-                x = np.sin(ang) * dist
-                y = np.cos(ang) * dist
-
-            # occupancy grid computed with bresenham ray casting
-            ix = int(round((x - self.range_min) / self.xy_reso))
-            iy = int(round((y - self.range_min) / self.xy_reso))
-            laser_beams = lg.bresenham((center_ix, center_iy), (ix, iy))  # line form the lidar to the occupied point
-
-            for laser_beam in laser_beams:
-                idx = self.index_2d_to_1d(laser_beam[0],laser_beam[1])
-                if 0 <= idx < self.img_width*self.img_height:
-                    image[idx] = free # free area
-
-            if 0 <= self.index_2d_to_1d(ix, iy) < self.img_width*self.img_height:
-                image[self.index_2d_to_1d(ix, iy)] = occupied  # occupied area
-            if 0 <= self.index_2d_to_1d(ix+1, iy) < self.img_width*self.img_height:
-                image[self.index_2d_to_1d(ix+1, iy)] = occupied  # extend the occupied area
-            if 0 <= self.index_2d_to_1d(ix, iy+1) < self.img_width*self.img_height:
-                image[self.index_2d_to_1d(ix, iy+1)] = occupied  # extend the occupied area
-            if 0 <= self.index_2d_to_1d(ix+1, iy+1) < self.img_width*self.img_height:
-                image[self.index_2d_to_1d(ix+1, iy+1)] = occupied  # extend the occupied area
+            #rospy.loginfo("ang: {:.2f}, dist: {:.2f}".format(ang, dist)) # テスト用
+            angles = [
+                        ang - 0.4444 * scan.angle_increment,
+                        ang - 0.3333 * scan.angle_increment,
+                        ang - 0.2222 * scan.angle_increment,
+                        ang - 0.1111 * scan.angle_increment,
+                        ang - 0.0 * scan.angle_increment,
+                        ang + 0.1111 * scan.angle_increment,
+                        ang + 0.2222 * scan.angle_increment,
+                        ang + 0.3333 * scan.angle_increment,
+                        ang + 0.4444 * scan.angle_increment,
+                     ]
+            for a in angles:
+                if np.isnan(dist) or dist == 0.0:
+                    continue
+                else:
+                    x = np.sin(a) * dist
+                    y = np.cos(a) * dist
+            
+                # occupancy grid computed with bresenham ray casting
+                ix = int(round((x - self.range_min) / self.xy_reso))
+                iy = int(round((y - self.range_min) / self.xy_reso))
+                laser_beams = lg.bresenham((center_ix, center_iy), (ix, iy))  # line form the lidar to the occupied point
+                for laser_beam in laser_beams:
+                    idx = self.index_2d_to_1d(laser_beam[0], laser_beam[1])
+                    if 0 <= idx < self.img_width*self.img_height:
+                        image[idx] = free # free area
+            
+                if 0 <= self.index_2d_to_1d(ix, iy) < self.img_width*self.img_height:
+                    image[self.index_2d_to_1d(ix, iy)] = occupied  # occupied area
+                if 0 <= self.index_2d_to_1d(ix+1, iy) < self.img_width*self.img_height:
+                    image[self.index_2d_to_1d(ix+1, iy)] = occupied  # extend the occupied area
+                if 0 <= self.index_2d_to_1d(ix, iy+1) < self.img_width*self.img_height:
+                    image[self.index_2d_to_1d(ix, iy+1)] = occupied  # extend the occupied area
+                if 0 <= self.index_2d_to_1d(ix+1, iy+1) < self.img_width*self.img_height:
+                    image[self.index_2d_to_1d(ix+1, iy+1)] = occupied  # extend the occupied area
 
     def add_path_to_image(self, image, wp):
         path = 0  # grid value for path
@@ -121,8 +136,8 @@ class LocalCostmapGenerator():
     def generate_costmap(self, scan, wp, pred_ped_pos=None):
         # set info
         img = OccupancyGrid()
-        img.header.stamp = rospy.Time.now()
-        img.header.frame_id = "/map"
+        img.header.stamp = scan.header.stamp
+        img.header.frame_id = self.robot_frame
         img.info.resolution = self.xy_reso
         img.info.width = self.img_width
         img.info.height = self.img_height
@@ -135,6 +150,8 @@ class LocalCostmapGenerator():
         self.add_scan_to_image(img_data, scan)
 
         # ゴールまでの経路をoccupancy_mapに追加
+        if img.header.stamp > wp.header.stamp:
+            img.header.stamp = wp.header.stamp
         self.add_path_to_image(img_data, wp)
 
         # 歩行者予測位置をローカル座標系に変換
